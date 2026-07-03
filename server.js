@@ -17,7 +17,6 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Auth middleware ───────────────────────────────────────────
 const requireApiKey = (req, res, next) => {
   if (req.headers['x-api-key'] !== API_KEY) {
     return res.status(401).json({ error: 'Invalid API key' });
@@ -25,68 +24,79 @@ const requireApiKey = (req, res, next) => {
   next();
 };
 
-// ══════════════════════════════════════════════════════════════
-//  SYNC API — Plugin gửi data lên
-// ══════════════════════════════════════════════════════════════
+// Debug — log toàn bộ request từ plugin
+app.use('/api/sync', (req, res, next) => {
+  const body = req.body || {};
+  console.log(`[SYNC] ${req.method} ${req.path}`);
+  console.log(`[SYNC] Keys: ${Object.keys(body).join(', ')}`);
+  console.log(`[SYNC] Body preview: ${JSON.stringify(body).substring(0, 300)}`);
+  next();
+});
 
+// ── Snapshot ──────────────────────────────────────────────
 app.post('/api/sync/snapshot', requireApiKey, (req, res) => {
   try {
-    const { serverId, serverName, items } = req.body;
+    const body = req.body || {};
 
-    if (!serverId || !items || !Array.isArray(items)) {
-      console.warn('[SYNC] Body thiếu field:', Object.keys(req.body));
-      return res.status(400).json({ error: 'Missing serverId or items', received: Object.keys(req.body) });
+    // Lấy serverId — plugin gửi dưới dạng "serverId"
+    const serverId = body.serverId || body.server_id || 'unknown';
+    const serverName = body.serverName || body.server_name || serverId;
+
+    // Lấy items — có thể là array hoặc object
+    let items = body.items;
+    if (!items) {
+      console.warn('[SYNC] Không có field items, body:', JSON.stringify(body).substring(0, 500));
+      return res.status(400).json({ error: 'Missing items', received: Object.keys(body) });
     }
+    if (!Array.isArray(items)) items = Object.values(items);
+    if (items.length === 0) return res.json({ success: true, count: 0 });
 
-    db.saveSnapshot(serverId, serverName || serverId, items);
-
-    // Phát real-time cho web client đang xem server này
+    db.saveSnapshot(serverId, serverName, items);
     io.to(`server:${serverId}`).emit('priceUpdate', { serverId, items });
 
-    res.json({ success: true, itemsUpdated: items.length });
+    console.log(`[SYNC] OK — server=${serverId} items=${items.length}`);
+    res.json({ success: true, count: items.length });
 
   } catch (err) {
-    console.error('[SYNC] Snapshot error:', err.message);
+    console.error('[SYNC] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
+// ── Transactions ──────────────────────────────────────────
 app.post('/api/sync/transactions', requireApiKey, (req, res) => {
   try {
-    const { serverId, transactions } = req.body;
+    const body = req.body || {};
+    const serverId = body.serverId || body.server_id || 'unknown';
+    let transactions = body.transactions;
 
-    if (!serverId || !transactions || !Array.isArray(transactions)) {
-      return res.status(400).json({ error: 'Missing serverId or transactions' });
-    }
+    if (!transactions) return res.status(400).json({ error: 'Missing transactions' });
+    if (!Array.isArray(transactions)) transactions = Object.values(transactions);
+    if (transactions.length === 0) return res.json({ success: true, count: 0 });
 
     db.saveTransactions(serverId, transactions);
     io.to(`server:${serverId}`).emit('newTransactions', { serverId, transactions });
 
+    console.log(`[SYNC] TX OK — server=${serverId} count=${transactions.length}`);
     res.json({ success: true, count: transactions.length });
 
   } catch (err) {
-    console.error('[SYNC] TX error:', err.message);
+    console.error('[SYNC] TX Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  WEB API — Frontend đọc data
-// ══════════════════════════════════════════════════════════════
-
-// Danh sách tất cả server
+// ── Web API ───────────────────────────────────────────────
 app.get('/api/servers', (req, res) => {
   try { res.json(db.getServers()); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Items của 1 server
 app.get('/api/servers/:serverId/items', (req, res) => {
   try { res.json(db.getServerItems(req.params.serverId)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Lịch sử giá
 app.get('/api/servers/:serverId/items/:material/history', (req, res) => {
   try {
     const hours = parseInt(req.query.hours) || 24;
@@ -95,7 +105,6 @@ app.get('/api/servers/:serverId/items/:material/history', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Giao dịch gần đây
 app.get('/api/servers/:serverId/transactions', (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 30;
@@ -103,7 +112,6 @@ app.get('/api/servers/:serverId/transactions', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Top biến động
 app.get('/api/servers/:serverId/top-movers', (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 8;
@@ -111,10 +119,7 @@ app.get('/api/servers/:serverId/top-movers', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ADMIN API
-// ══════════════════════════════════════════════════════════════
-
+// ── Admin ─────────────────────────────────────────────────
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
@@ -133,48 +138,39 @@ app.post('/api/admin/set-price', requireApiKey, (req, res) => {
     const item = db.getServerItem(serverId, material.toUpperCase());
     if (!item) return res.status(404).json({ error: 'Item không tồn tại' });
 
-    db.saveSnapshot(serverId, item.server_id, [{
+    db.saveSnapshot(serverId, serverId, [{
       material: material.toUpperCase(),
       displayName: item.display_name,
       baseBuy: item.base_buy, baseSell: item.base_sell,
       currentBuy: buyPrice, currentSell: sellPrice,
       totalBought: item.total_bought, totalSold: item.total_sold,
-      buyChangePct: ((buyPrice - item.base_buy) / item.base_buy) * 100,
-      sellChangePct: ((sellPrice - item.base_sell) / item.base_sell) * 100
+      buyChangePct: item.base_buy > 0 ? ((buyPrice - item.base_buy) / item.base_buy) * 100 : 0,
+      sellChangePct: item.base_sell > 0 ? ((sellPrice - item.base_sell) / item.base_sell) * 100 : 0
     }]);
 
     io.to(`server:${serverId}`).emit('priceUpdate', {
       serverId,
       items: [{ material: material.toUpperCase(), currentBuy: buyPrice, currentSell: sellPrice }]
     });
-
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── WebSocket ─────────────────────────────────────────────────
+// ── WebSocket ─────────────────────────────────────────────
 io.on('connection', (socket) => {
-  // Client subscribe vào 1 server cụ thể
   socket.on('joinServer', (serverId) => {
     socket.join(`server:${serverId}`);
-    console.log(`[WS] ${socket.id} joined server: ${serverId}`);
+    console.log(`[WS] ${socket.id} joined ${serverId}`);
   });
-
-  socket.on('disconnect', () => {
-    console.log('[WS] Disconnected:', socket.id);
-  });
+  socket.on('disconnect', () => console.log('[WS] Disconnected:', socket.id));
 });
 
-// ── Fallback ──────────────────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 server.listen(PORT, () => {
-  console.log(`╔═══════════════════════════════════════╗`);
-  console.log(`║  DynamicShop Backend v2.0 chạy!      ║`);
-  console.log(`║  Port: ${PORT}                            ║`);
-  console.log(`╚═══════════════════════════════════════╝`);
+  console.log(`DynamicShop Backend v2 chạy trên port ${PORT}`);
 });
