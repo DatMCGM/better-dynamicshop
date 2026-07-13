@@ -143,6 +143,8 @@ module.exports = {
     db.prepare(`SELECT * FROM items WHERE server_id = ? ORDER BY display_name`).all(serverId),
   getItemHistory: (serverId, material, since) =>
     db.prepare(`SELECT * FROM price_history WHERE server_id = ? AND material = ? AND timestamp > ? ORDER BY timestamp ASC`).all(serverId, material, since),
+  getItemTransactions: (serverId, material, since) =>
+    db.prepare(`SELECT * FROM transactions WHERE server_id = ? AND material = ? AND timestamp > ? ORDER BY timestamp ASC`).all(serverId, material, since),
   getRecentTx: (serverId, limit) =>
     db.prepare(`SELECT * FROM transactions WHERE server_id = ? ORDER BY timestamp DESC LIMIT ?`).all(serverId, limit),
   getTopMovers: (serverId, limit) =>
